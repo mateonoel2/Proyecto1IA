@@ -69,45 +69,19 @@ def calculate(yv, y_pred):
   
   return precision, recall, f1, roc_auc
 
-def softmax(x, w):
-    dot_products = np.dot(x, w.T)
-    exps = np.exp(dot_products - np.max(dot_products, axis=1, keepdims=True))
-    probs = exps / np.sum(exps, axis=1, keepdims=True)
-    return probs
-
-def SVMtrain(x, y, epochs, alpha, C):
-    # Initialize parameters
-    w = np.zeros((x.shape[1], 3))
-    bias = np.zeros(3)
-    
-    # Train the SVM using OVA approach
-    for c in range(3):
-        y_c = np.where(y == c+1, 1, -1)
-        for _ in range(epochs):
-            for i, X in enumerate(x):
-                if y_c[i] * (np.dot(X, w[:,c]) - bias[c]) >= 1:
-                    w[:,c] -= alpha * (C * np.dot(w[:,c], X))
-                else:
-                  w[:,c] -= alpha * (C * np.dot(w[:,c], X) - np.dot(X, y_c[i]) )
-                  bias[c] -= alpha * y_c[i]
-    return w, bias
-
-def SVMpredict(x, w, bias):
-    predictions = []
-    for X in x:
-        scores = np.dot(X, w) - bias
-        prediction = np.argmax(scores) + 1
-        predictions.append(prediction)
-    y_pred = np.array(predictions)
-    return y_pred
-
-def predict(model, xt, yt, xv, epochs, alpha, p1):
-  if model=="SVM":
-      w, bias = SVMtrain(xt,  yt,  epochs, alpha, p1)
-      y_pred = SVMpredict(xv, w, bias)
-      return y_pred
-  raise ValueError("Modelo inválido")
-
+def KNNpredict(x, y, x_test, k):
+        y_pred = []
+        for i in range(len(x_test)):
+            distances = []
+            for j in range(len(x)):
+                dist = np.sqrt(np.sum((x_test[i] - x[j])**2))
+                distances.append((dist, y[j]))
+            distances.sort()
+            neighbors = distances[:k]
+            labels = [neighbor[1] for neighbor in neighbors]
+            label = max(set(labels), key=labels.count)
+            y_pred.append(label)
+        return np.array(y_pred)
 
 def bagging_with_cross_validation(x, y, model, epochs, alpha, p1):
   # Create a K-fold cross-validator object
@@ -149,7 +123,7 @@ def bagging_with_cross_validation(x, y, model, epochs, alpha, p1):
         y_sampled = yt[indices]
 
         #Training
-        y_pred = predict(model, x_sampled, y_sampled, xv, epochs, alpha, p1)
+        y_pred = KNNpredict(x_sampled, y_sampled, xv, p1)
 
         cont+=1
         logging.info("Trainee = {}".format(cont))
@@ -201,26 +175,24 @@ def my_function(args):
   proc = multiprocessing.current_process()
   logging.info(f"Running on processor {proc.name} (ID: {proc.pid})")
 
-  C = args
-  alpha = 0.01
-  epochs = 143
- 
-  mean_acc, p, r, f, a = bagging_with_cross_validation(x_train, y_train2, "SVM", epochs, alpha, C)
-  result = [alpha, epochs, C, mean_acc, p, r, f, a]
+  K = args
+
+  mean_acc, p, r, f, a = bagging_with_cross_validation(x_train, y_train3, "DT", None, None, K)
+  result = [K, mean_acc, p, r, f, a]
   logging.info(
-        "SVM MODEL\nLearning rate = {}\nEpochs = {}\n C = {}\nMean accuracy: {}\n"
+        "KNN MODEL\nK = {}\nMean accuracy: {}\n"
         "Mean precision: {}\nMean recall: {}\nMean f1_score: {}\nMean auc: {}\n"
-        .format(alpha, epochs, C, mean_acc, p, r, f, a)
+        .format(K, mean_acc, p, r, f, a)
   )
   return result
 
 if __name__ == '__main__':
-    list_of_args = [0.0001, 0.001, 0.01, 0.1, 1, 10]
+    list_of_args = [1, 2, 3, 4, 5, 6, 7, 8]
     with multiprocessing.Pool(processes=8) as pool:
         results = pool.map(my_function, list_of_args)
     
     pool.join()
-    headers = ["Alpha", "Epochs", "C", "Mean Accuracy", "Mean Precision", "Mean Recall", "Mean F1", "Mean AUC"]
+    headers = ["K", "Mean Accuracy", "Mean Precision", "Mean Recall", "Mean F1", "Mean AUC"]
     table = tabulate(results, headers=headers)
 
     print(table)

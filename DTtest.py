@@ -69,44 +69,96 @@ def calculate(yv, y_pred):
   
   return precision, recall, f1, roc_auc
 
-def softmax(x, w):
-    dot_products = np.dot(x, w.T)
-    exps = np.exp(dot_products - np.max(dot_products, axis=1, keepdims=True))
-    probs = exps / np.sum(exps, axis=1, keepdims=True)
-    return probs
+class SplitNode:
+    def __init__(self, feature, threshold, left, right):
+        self.feature = feature
+        self.threshold = threshold
+        self.left = left
+        self.right = right
 
-def SVMtrain(x, y, epochs, alpha, C):
-    # Initialize parameters
-    w = np.zeros((x.shape[1], 3))
-    bias = np.zeros(3)
+class DecisionTree:
+    def __init__(self, max_depth=None):
+        self.max_depth = max_depth
+        
+    def fit(self, X, y):
+        self.n_classes = len(np.unique(y))
+        self.tree = self._grow_tree(X, y)
+        
+    def _grow_tree(self, X, y, depth=0):
+        n_samples, n_features = X.shape
+        n_labels = [np.sum(y == i) for i in range(self.n_classes)]
+        most_common_label = np.argmax(n_labels)
+        
+        # Stopping criteria
+        if depth == self.max_depth or n_samples < 2 or len(np.unique(y)) == 1:
+            return most_common_label
+        
+        # Splitting criteria
+        feature_idxs = np.random.choice(n_features, int(np.sqrt(n_features)), replace=False)
+        best_feature, best_threshold = None, None
+        best_gini = 1.0
+        
+        for idx in feature_idxs:
+            thresholds = np.unique(X[:, idx])
+            
+            if len(thresholds) == 1:
+                continue
+                
+            for threshold in thresholds:
+                left_idx = X[:, idx] < threshold
+                n_left = np.sum(left_idx)
+                
+                if n_left == 0:
+                    continue
+                    
+                n_right = n_samples - n_left
+                gini_left = self._gini(y[left_idx])
+                gini_right = self._gini(y[~left_idx])
+                gini = (n_left/n_samples) * gini_left + (n_right/n_samples) * gini_right
+                
+                if gini < best_gini:
+                    best_gini = gini
+                    best_feature = idx
+                    best_threshold = threshold
+        
+        # Check if best_threshold is still None
+        if best_threshold is None:
+            return most_common_label
+        
+        # Recurse on children
+        left_idx = X[:, best_feature] < best_threshold
+        right_idx = X[:, best_feature] >= best_threshold
+        left_tree = self._grow_tree(X[left_idx], y[left_idx], depth+1)
+        right_tree = self._grow_tree(X[right_idx], y[right_idx], depth+1)
+        
+        return SplitNode(best_feature, best_threshold, left_tree, right_tree)
+
     
-    # Train the SVM using OVA approach
-    for c in range(3):
-        y_c = np.where(y == c+1, 1, -1)
-        for _ in range(epochs):
-            for i, X in enumerate(x):
-                if y_c[i] * (np.dot(X, w[:,c]) - bias[c]) >= 1:
-                    w[:,c] -= alpha * (C * np.dot(w[:,c], X))
-                else:
-                  w[:,c] -= alpha * (C * np.dot(w[:,c], X) - np.dot(X, y_c[i]) )
-                  bias[c] -= alpha * y_c[i]
-    return w, bias
+    def _gini(self, y):
+        n_samples = len(y)
+        _, counts = np.unique(y, return_counts=True)
+        impurity = 1.0 - np.sum((counts / n_samples) ** 2)
+        return impurity
+    
+    def predict(self, X):
+        # Traverse the decision tree for each data point
+        y_pred = np.array([self._traverse_tree(x, self.tree) for x in X])
+        
+        return y_pred
 
-def SVMpredict(x, w, bias):
-    predictions = []
-    for X in x:
-        scores = np.dot(X, w) - bias
-        prediction = np.argmax(scores) + 1
-        predictions.append(prediction)
-    y_pred = np.array(predictions)
-    return y_pred
-
-def predict(model, xt, yt, xv, epochs, alpha, p1):
-  if model=="SVM":
-      w, bias = SVMtrain(xt,  yt,  epochs, alpha, p1)
-      y_pred = SVMpredict(xv, w, bias)
-      return y_pred
-  raise ValueError("Modelo inválido")
+    
+    def _traverse_tree(self, x, node):
+        if (np.issubdtype(type(node), np.integer)):
+          return node
+        
+        # Check if node is a leaf node
+        if node.left is None and node.right is None:
+            return node.label
+        
+        if x[node.feature] < node.threshold:
+            return self._traverse_tree(x, node.left)
+        else:
+            return self._traverse_tree(x, node.right)
 
 
 def bagging_with_cross_validation(x, y, model, epochs, alpha, p1):
@@ -149,7 +201,9 @@ def bagging_with_cross_validation(x, y, model, epochs, alpha, p1):
         y_sampled = yt[indices]
 
         #Training
-        y_pred = predict(model, x_sampled, y_sampled, xv, epochs, alpha, p1)
+        dt = DecisionTree(max_depth=p1)
+        dt.fit(x_sampled, y_sampled)
+        y_pred = dt.predict(xv)
 
         cont+=1
         logging.info("Trainee = {}".format(cont))
@@ -201,26 +255,24 @@ def my_function(args):
   proc = multiprocessing.current_process()
   logging.info(f"Running on processor {proc.name} (ID: {proc.pid})")
 
-  C = args
-  alpha = 0.01
-  epochs = 143
- 
-  mean_acc, p, r, f, a = bagging_with_cross_validation(x_train, y_train2, "SVM", epochs, alpha, C)
-  result = [alpha, epochs, C, mean_acc, p, r, f, a]
+  Depth = args
+
+  mean_acc, p, r, f, a = bagging_with_cross_validation(x_train, y_train3, "DT", None, None, Depth)
+  result = [Depth, mean_acc, p, r, f, a]
   logging.info(
-        "SVM MODEL\nLearning rate = {}\nEpochs = {}\n C = {}\nMean accuracy: {}\n"
+        "DT MODEL\nDepth = {}\nMean accuracy: {}\n"
         "Mean precision: {}\nMean recall: {}\nMean f1_score: {}\nMean auc: {}\n"
-        .format(alpha, epochs, C, mean_acc, p, r, f, a)
+        .format(Depth, mean_acc, p, r, f, a)
   )
   return result
 
 if __name__ == '__main__':
-    list_of_args = [0.0001, 0.001, 0.01, 0.1, 1, 10]
+    list_of_args = [8, 14, 16, 20, 40, 60, 80, 100]
     with multiprocessing.Pool(processes=8) as pool:
         results = pool.map(my_function, list_of_args)
     
     pool.join()
-    headers = ["Alpha", "Epochs", "C", "Mean Accuracy", "Mean Precision", "Mean Recall", "Mean F1", "Mean AUC"]
+    headers = ["Depth", "Mean Accuracy", "Mean Precision", "Mean Recall", "Mean F1", "Mean AUC"]
     table = tabulate(results, headers=headers)
 
     print(table)
